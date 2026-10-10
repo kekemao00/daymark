@@ -27,7 +27,7 @@
 
 1. 同步修改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 里的版本号
 2. 写好 `.github/release-notes/v<版本>.md`
-3. 推送标签，例如 `git tag v0.2.0 && git push origin v0.2.0`
+3. 推送标签，例如 `git tag v0.2.0 && git push origin v0.2.0`；或在 GitHub 的 Actions → Release 页面点 Run workflow 并填写 `v0.2.0`
 
 `.github/workflows/release.yml` 会在 Windows 上跑核心单测、构建安装包，并创建 GitHub Release（附件名为
 `Daymark_<版本>_x64-setup.exe`）。
