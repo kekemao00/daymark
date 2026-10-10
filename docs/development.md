@@ -18,8 +18,19 @@
 | `npm run verify:lunar` | 农历 1901–2099 逐日对照 lunar-javascript |
 | `npm run tauri build` | 在 Windows 上生成 NSIS 安装包 `target/release/bundle/nsis/` |
 
+
+
 农历数据表需要更新时：`node scripts/gen-lunar-table.mjs > crates/daymark-core/src/lunar_table.rs`，然后跑一遍
 `cargo test -p daymark-core` 和 `npm run verify:lunar`。
+
+## 发版
+
+1. 同步修改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 里的版本号
+2. 写好 `.github/release-notes/v<版本>.md`
+3. 推送标签，例如 `git tag v0.2.0 && git push origin v0.2.0`
+
+`.github/workflows/release.yml` 会在 Windows 上跑核心单测、构建安装包，并创建 GitHub Release（附件名为
+`Daymark_<版本>_x64-setup.exe`）。
 
 ## 在 Linux 上交叉编译 Windows 安装包
 

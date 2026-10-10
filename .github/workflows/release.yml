@@ -1,0 +1,47 @@
+name: Release
+
+# 推送 v* 标签（如 v0.1.0）时在 Windows 上构建安装包并发布到 GitHub Releases。
+# 发布说明取自 .github/release-notes/<标签>.md，没有该文件时自动生成。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: 校验标签与应用版本一致
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "标签 $GITHUB_REF_NAME 与 tauri.conf.json 的版本 $version 不一致"; exit 1
+          fi
+      - name: 核心逻辑单测
+        run: cargo test -p daymark-core
+      - name: 构建安装包
+        run: npx tauri build
+      - name: 发布
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          # GitHub 附件名不支持中文，改成英文文件名
+          asset="Daymark_${version}_x64-setup.exe"
+          cp target/release/bundle/nsis/*.exe "$asset"
+          notes=".github/release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then notes_args=(--notes-file "$notes"); else notes_args=(--generate-notes); fi
+          gh release create "$GITHUB_REF_NAME" "$asset#刻忆 ${version} Windows 安装包" \
+            --title "刻忆 $GITHUB_REF_NAME" "${notes_args[@]}"
