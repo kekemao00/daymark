@@ -1,15 +1,23 @@
 name: Release
 
-# 推送 v* 标签（如 v0.1.0），或在 Actions 页面手动运行并填写版本，
-# 会在 Windows 上构建安装包并发布到 GitHub Releases（手动运行时自动在当前提交上打标签）。
+# 推送 v* 标签（如 v0.2.0），或在 Actions 页面手动运行并填写版本，
+# 会在 Windows 上构建安装包、给安装包签名，并发布到 GitHub Releases：
+#   Daymark_<版本>_x64-setup.exe        安装包（手动下载安装用）
+#   Daymark_<版本>_x64-setup.exe.sig    更新签名
+#   latest.json                         应用内更新清单（刻忆启动时从 releases/latest/download/latest.json 读取）
+#   SHA256SUMS.txt                      校验和
 # 发布说明取自 .github/release-notes/<标签>.md，没有该文件时自动生成。
+# 标签里带 "-"（如 v0.3.0-beta.1）会标为预发布，不会推送给现有用户自动更新。
+#
+# 需要仓库 Secret：TAURI_SIGNING_PRIVATE_KEY（更新签名私钥；可选 TAURI_SIGNING_PRIVATE_KEY_PASSWORD）。
+# 生成与配置方法见 docs/development.md。
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 要发布的版本标签，如 v0.1.0
+        description: 要发布的版本标签，如 v0.2.0
         required: true
 
 env:
@@ -30,27 +38,54 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - name: 校验标签与应用版本一致
+      - name: 校验标签、版本号与签名密钥
         shell: bash
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "v$version" != "$TAG" ]; then
-            echo "标签 $TAG 与 tauri.conf.json 的版本 $version 不一致"; exit 1
+          node scripts/check-version.mjs "$TAG"
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error::缺少仓库 Secret TAURI_SIGNING_PRIVATE_KEY，无法给更新包签名。生成与配置方法见 docs/development.md。"
+            exit 1
           fi
       - name: 核心逻辑单测
         run: cargo test -p daymark-core
-      - name: 构建安装包
+      - name: 构建并签名安装包
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
-      - name: 发布
+      - name: 整理发布文件
+        shell: bash
+        run: |
+          version=${TAG#v}
+          mkdir -p release
+          # GitHub 附件名不支持中文，改成英文文件名
+          asset="Daymark_${version}_x64-setup.exe"
+          cp target/release/bundle/nsis/*-setup.exe "release/$asset"
+          cp target/release/bundle/nsis/*-setup.exe.sig "release/$asset.sig"
+          notes=".github/release-notes/$TAG.md"
+          if [ -f "$notes" ]; then
+            node scripts/release-manifest.mjs "$TAG" "release/$asset" "release/$asset.sig" "$notes" > release/latest.json
+          else
+            node scripts/release-manifest.mjs "$TAG" "release/$asset" "release/$asset.sig" > release/latest.json
+          fi
+          (cd release && sha256sum "$asset" latest.json > SHA256SUMS.txt)
+          ls -la release && cat release/latest.json
+      - name: 发布到 GitHub Releases
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=${TAG#v}
-          # GitHub 附件名不支持中文，改成英文文件名
           asset="Daymark_${version}_x64-setup.exe"
-          cp target/release/bundle/nsis/*.exe "$asset"
           notes=".github/release-notes/$TAG.md"
-          if [ -f "$notes" ]; then notes_args=(--notes-file "$notes"); else notes_args=(--generate-notes); fi
-          gh release create "$TAG" "$asset#刻忆 ${version} Windows 安装包" \
-            --target "$GITHUB_SHA" --title "刻忆 $TAG" "${notes_args[@]}"
+          args=(--target "$GITHUB_SHA" --title "刻忆 $TAG")
+          if [ -f "$notes" ]; then args+=(--notes-file "$notes"); else args+=(--generate-notes); fi
+          case "$version" in *-*) args+=(--prerelease);; esac
+          gh release create "$TAG" \
+            "release/$asset#刻忆 ${version} Windows 安装包" \
+            "release/$asset.sig#更新签名" \
+            "release/latest.json#应用内更新清单" \
+            "release/SHA256SUMS.txt#SHA-256 校验和" \
+            "${args[@]}"
