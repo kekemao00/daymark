@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { daysLabel, groupUpcoming, matches, offsetLabel, shortDate, solarMaxDay } from './format';
+import { compareVersions, daysLabel, formatBytes, groupUpcoming, matches, offsetLabel, shortDate, solarMaxDay, summarize, todayLabel } from './format';
 import type { DayEvent, Upcoming } from './types';
 
 const up = (eventId: string, daysUntil: number): Upcoming => ({
@@ -10,6 +10,7 @@ const up = (eventId: string, daysUntil: number): Upcoming => ({
   lunarLabel: null,
   ruleLabel: '',
   countLabel: null,
+  prepared: false,
 });
 
 const ev = (over: Partial<DayEvent>): DayEvent => ({
@@ -57,6 +58,28 @@ describe('format', () => {
       ['month', 'd'],
       ['later', 'e'],
     ]);
+  });
+
+  it('labels today with weekday', () => {
+    expect(todayLabel('2026-10-16')).toBe('10月16日 周五');
+  });
+
+  it('summarizes enabled events by distance', () => {
+    const events = new Map<string, DayEvent>([
+      ['a', ev({ id: 'a' })],
+      ['b', ev({ id: 'b' })],
+      ['c', ev({ id: 'c', enabled: false })],
+      ['d', ev({ id: 'd' })],
+    ]);
+    expect(summarize([up('a', 0), up('b', 5), up('c', 6), up('d', 40)], events)).toEqual({ today: 1, week: 1, month: 0, total: 4 });
+  });
+
+  it('formats bytes and compares versions', () => {
+    expect(formatBytes(900)).toBe('900 B');
+    expect(formatBytes(8_400_000)).toBe('8.0 MB');
+    expect(compareVersions('0.10.0', '0.9.1')).toBeGreaterThan(0);
+    expect(compareVersions('v0.2.0', '0.2.0')).toBe(0);
+    expect(compareVersions('0.2.0-beta.1', '0.2.0')).toBe(0);
   });
 
   it('filters by category and text', () => {
