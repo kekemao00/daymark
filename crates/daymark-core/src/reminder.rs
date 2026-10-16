@@ -33,6 +33,8 @@ pub struct Upcoming {
     pub rule_label: String,
     /// 如“60 岁生日”“3 周年”。
     pub count_label: Option<String>,
+    /// 用户已为这一次做好准备（礼物、安排都定了）。
+    pub prepared: bool,
 }
 
 pub fn upcoming_for(event: &Event, today: NaiveDate) -> Option<Upcoming> {
@@ -45,6 +47,7 @@ pub fn upcoming_for(event: &Event, today: NaiveDate) -> Option<Upcoming> {
         lunar_label: calendar::solar_to_lunar(occ.date).map(|l| l.label()),
         rule_label: event.rule.label(),
         count_label: count_label(event, &occ),
+        prepared: event.prepared == Some(occ.date),
     })
 }
 
@@ -84,12 +87,17 @@ pub struct DueReminder {
 }
 
 /// `today` 这一天应发出且尚未发出的提醒。调用方负责只在到达每日提醒时刻后调用。
+///
+/// 标记了“已准备”的那一次，提前提醒不再发出，当天仍提醒一次。
 pub fn due_reminders(data: &Data, today: NaiveDate) -> Vec<DueReminder> {
     let mut due = vec![];
     for event in data.events.iter().filter(|e| e.enabled) {
         let Some(occ) = next_occurrence(&event.rule, today) else { continue };
         let days_until = (occ.date - today).num_days();
         let Some(stage) = current_stage(&event.offsets, days_until) else { continue };
+        if stage > 0 && event.prepared == Some(occ.date) {
+            continue;
+        }
         // 阶段的触发日早于 remind_from（新建或改日期那天）就跳过，避免刚录入就弹窗
         let trigger = occ.date - chrono::Duration::days(stage as i64);
         if trigger < event.remind_from {
@@ -249,6 +257,29 @@ mod tests {
         data.events[0].enabled = true;
         assert_eq!(fire(&mut data, d(2026, 1, 10)).len(), 1);
         assert_eq!(fire(&mut data, d(2027, 1, 10)).len(), 1);
+    }
+
+    #[test]
+    fn prepared_mutes_advance_reminders_but_not_the_day() {
+        let mut data = Data::default();
+        data.events.push(event("a", solar(12, 25), &[30, 7, 0], d(2026, 1, 1)));
+        assert_eq!(fire(&mut data, d(2026, 11, 25)).len(), 1);
+        // 收到 30 天提醒后标记“已准备”：7 天阶段不再提醒，当天仍提醒
+        data.events[0].prepared = Some(d(2026, 12, 25));
+        assert!(fire(&mut data, d(2026, 12, 18)).is_empty());
+        assert_eq!(fire(&mut data, d(2026, 12, 25))[0].offset, 0);
+        // 明年是新的一次，照常提醒
+        assert_eq!(fire(&mut data, d(2027, 11, 25))[0].offset, 30);
+        let list = upcoming(&data.events, d(2027, 11, 25));
+        assert!(!list[0].prepared);
+    }
+
+    #[test]
+    fn upcoming_reports_prepared_for_this_occurrence_only() {
+        let mut e = event("a", solar(12, 25), &[0], d(2026, 1, 1));
+        e.prepared = Some(d(2026, 12, 25));
+        assert!(upcoming(&[e.clone()], d(2026, 12, 1))[0].prepared);
+        assert!(!upcoming(&[e], d(2027, 1, 1))[0].prepared);
     }
 
     #[test]
