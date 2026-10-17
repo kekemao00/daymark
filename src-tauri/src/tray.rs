@@ -1,19 +1,23 @@
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 const TRAY_ID: &str = "main";
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "打开刻忆", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "检查更新…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出刻忆", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open, &update, &separator, &quit])?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("刻忆")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
+            "update" => crate::updater::check_from_tray(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -53,6 +57,13 @@ pub fn show_main(app: &AppHandle) {
     };
     match WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
         Ok(window) => {
+            // 窗口销毁时把大小位置写盘，下次打开沿用（退出时插件也会写一次）
+            let handle = app.clone();
+            window.on_window_event(move |event| {
+                if let WindowEvent::Destroyed = event {
+                    let _ = handle.save_window_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+                }
+            });
             let _ = window.set_focus();
         }
         Err(e) => eprintln!("创建窗口失败：{e}"),

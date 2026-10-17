@@ -16,16 +16,22 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - name: 核心逻辑单测
-        run: cargo test -p daymark-core
+      - name: 核心逻辑单测与 clippy
+        run: |
+          cargo test -p daymark-core
+          cargo clippy -p daymark-core --all-targets -- -D warnings
       - name: 农历逐日对照（1901–2099）
         run: npm run verify:lunar
       - name: 前端类型检查、单测与构建
         run: |
           npm test
           npm run build
+      - name: 版本号一致性
+        run: node scripts/check-version.mjs
 
   windows:
     needs: test
@@ -37,10 +43,15 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - name: 构建 Windows 安装包
-        run: npx tauri build
+      - name: Tauri 外壳 clippy
+        run: cargo clippy -p daymark -- -D warnings
+      - name: 构建 Windows 安装包（不签名，仅用于验证能打包）
+        # 日常 CI 不需要更新签名密钥；关掉 createUpdaterArtifacts 才能在没有密钥时打包
+        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - uses: actions/upload-artifact@v4
         with:
           name: daymark-windows-installer

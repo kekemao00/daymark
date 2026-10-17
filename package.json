@@ -1,14 +1,16 @@
 {
   "name": "daymark",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri": "tauri",
-    "verify:lunar": "cargo run -q --release -p daymark-core --example dump_lunar > lunar-dump.txt && node scripts/verify-lunar.mjs lunar-dump.txt"
+    "verify:lunar": "cargo run -q --release -p daymark-core --example dump_lunar > lunar-dump.txt && node scripts/verify-lunar.mjs lunar-dump.txt",
+    "version:set": "node scripts/bump-version.mjs",
+    "release:manifest": "node scripts/release-manifest.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.2",

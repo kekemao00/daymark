@@ -4,9 +4,10 @@ use chrono::{Local, NaiveDate, Utc};
 use daymark_core::calendar::{self, LunarDate};
 use daymark_core::model::{normalize_offsets, parse_hm, OFFSET_CHOICES};
 use daymark_core::reminder::{upcoming_for, Upcoming};
-use daymark_core::{store, upcoming, Category, DateRule, Event, EventInput, Settings};
+use daymark_core::{next_occurrence, store, upcoming, Category, DateRule, Event, EventInput, Settings};
 use serde::Serialize;
 use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::state::AppState;
 
@@ -20,26 +21,33 @@ fn today() -> NaiveDate {
 #[serde(rename_all = "camelCase")]
 pub struct Overview {
     today: NaiveDate,
+    /// 今天的农历，如“九月初七”。
+    today_lunar: Option<String>,
     events: Vec<Event>,
     upcoming: Vec<Upcoming>,
     settings: Settings,
     notice: Option<String>,
     data_path: String,
     offset_choices: Vec<u32>,
+    version: String,
+    releases_url: String,
 }
 
 #[tauri::command]
-pub fn get_overview(state: State<AppState>) -> Overview {
+pub fn get_overview(app: AppHandle, state: State<AppState>) -> Overview {
     let data = state.snapshot();
     let today = today();
     Overview {
         today,
+        today_lunar: calendar::solar_to_lunar(today).map(|l| l.label()),
         upcoming: upcoming(&data.events, today),
         events: data.events,
         settings: data.settings,
         notice: state.notice.lock().unwrap().take(),
         data_path: state.store.path().display().to_string(),
         offset_choices: OFFSET_CHOICES.to_vec(),
+        version: app.package_info().version.to_string(),
+        releases_url: crate::updater::RELEASES_URL.into(),
     }
 }
 
@@ -65,11 +73,24 @@ pub fn save_event(state: State<AppState>, id: Option<String>, input: EventInput)
     })
 }
 
+/// 删除条目。已发提醒记录先留着：几秒内“撤销”恢复时不会重复弹同一阶段的提醒，
+/// 之后由调度线程的 `prune_fired` 清掉。
 #[tauri::command]
 pub fn delete_event(state: State<AppState>, id: String) -> CmdResult<()> {
     state.mutate(|data| {
         data.events.retain(|e| e.id != id);
-        data.fired.retain(|f| f.event_id != id);
+        Ok(())
+    })
+}
+
+/// 撤销删除：原样放回（保留 id、创建时间和“已准备”等状态）。
+#[tauri::command]
+pub fn restore_event(state: State<AppState>, event: Event) -> CmdResult<()> {
+    state.mutate(|data| {
+        if data.events.iter().any(|e| e.id == event.id) {
+            return Ok(());
+        }
+        data.events.push(event);
         Ok(())
     })
 }
@@ -88,6 +109,21 @@ pub fn set_event_enabled(state: State<AppState>, id: String, enabled: bool) -> C
             enabled,
         };
         event.apply(input, now, today);
+        Ok(())
+    })
+}
+
+/// 标记“这一次已准备好”：之后的提前提醒不再打扰，当天仍提醒。取消则恢复。
+#[tauri::command]
+pub fn set_event_prepared(state: State<AppState>, id: String, prepared: bool) -> CmdResult<()> {
+    let today = today();
+    state.mutate(|data| {
+        let event = data.events.iter_mut().find(|e| e.id == id).ok_or("这条记录已不存在")?;
+        event.prepared = if prepared {
+            Some(next_occurrence(&event.rule, today).ok_or("这条记录没有下一次日期")?.date)
+        } else {
+            None
+        };
         Ok(())
     })
 }
@@ -182,4 +218,34 @@ pub fn import_data(state: State<AppState>, path: String) -> CmdResult<ImportResu
 #[tauri::command]
 pub fn test_notification(app: AppHandle) -> CmdResult<()> {
     crate::scheduler::notify(&app, "刻忆通知测试", "看到这条消息，说明提醒可以正常弹出。")
+}
+
+/// 在资源管理器里定位数据文件。
+#[tauri::command]
+pub fn reveal_data_file(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
+    let path = state.store.path();
+    let target = if path.exists() { path.to_path_buf() } else { path.parent().map(|p| p.to_path_buf()).unwrap_or_default() };
+    if !target.exists() {
+        return Err("数据目录还不存在，保存第一条记录后再试".into());
+    }
+    app.opener().reveal_item_in_dir(&target).map_err(|e| format!("打开失败：{e}"))
+}
+
+/// 用系统浏览器打开本项目的 GitHub 页面（只允许项目自己的地址，避免被当成通用跳转）。
+#[tauri::command]
+pub fn open_project_url(app: AppHandle, url: String) -> CmdResult<()> {
+    if !url.starts_with("https://github.com/kekemao00/daymark") {
+        return Err("不允许打开这个地址".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| format!("打开浏览器失败：{e}"))
+}
+
+#[tauri::command]
+pub async fn check_update(app: AppHandle, force: bool) -> CmdResult<Option<crate::updater::UpdateInfo>> {
+    crate::updater::check(&app, force).await
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> CmdResult<()> {
+    crate::updater::install(&app).await
 }

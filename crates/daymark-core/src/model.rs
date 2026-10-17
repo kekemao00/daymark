@@ -73,6 +73,9 @@ pub struct Event {
     pub updated_at: DateTime<Utc>,
     /// 触发日早于这一天的提醒阶段不再补发（新建或改日期时设为当天，避免刚录入就弹窗）。
     pub remind_from: NaiveDate,
+    /// 用户已为这一次（当年的日期）做好准备：之后的提前提醒不再打扰，当天仍会提醒一次。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared: Option<NaiveDate>,
 }
 
 impl Event {
@@ -88,6 +91,7 @@ impl Event {
             created_at: now,
             updated_at: now,
             remind_from: today,
+            prepared: None,
         };
         event.apply(input, now, today);
         event
@@ -99,6 +103,10 @@ impl Event {
         if input.rule != self.rule || offsets != self.offsets || (input.enabled && !self.enabled) {
             self.remind_from = today;
         }
+        if input.rule != self.rule {
+            // 日期变了，之前“已准备”的那一次不再成立
+            self.prepared = None;
+        }
         self.name = input.name.trim().to_string();
         self.category = input.category;
         self.rule = input.rule;
@@ -109,6 +117,16 @@ impl Event {
     }
 }
 
+/// 界面主题。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -116,6 +134,11 @@ pub struct Settings {
     pub remind_time: String,
     pub autostart: bool,
     pub default_offsets: Vec<u32>,
+    /// 启动后和每隔几小时自动检查 GitHub Releases 上有没有新版本。
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -124,6 +147,8 @@ impl Default for Settings {
             remind_time: "09:00".into(),
             autostart: true,
             default_offsets: DEFAULT_OFFSETS.to_vec(),
+            check_updates: true,
+            theme: Theme::System,
         }
     }
 }
@@ -375,6 +400,43 @@ mod tests {
     fn labels() {
         assert_eq!(rule(CalendarKind::Lunar, 4, 8, true, None).label(), "农历闰四月初八");
         assert_eq!(rule(CalendarKind::Solar, 10, 26, false, None).label(), "公历 10月26日");
+    }
+
+    #[test]
+    fn old_settings_and_events_still_load() {
+        // 0.1 的数据文件没有 checkUpdates / theme / prepared 字段
+        let s: Settings = serde_json::from_str(r#"{"remindTime":"08:30","autostart":false,"defaultOffsets":[7,0]}"#).unwrap();
+        assert!(s.check_updates);
+        assert_eq!(s.theme, Theme::System);
+        let e: Event = serde_json::from_str(
+            r#"{"id":"a","name":"x","category":"birthday","calendar":"solar","month":1,"day":2,
+                "offsets":[0],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","remindFrom":"2026-01-01"}"#,
+        )
+        .unwrap();
+        assert_eq!(e.prepared, None);
+        // 没有标记“已准备”时不写出该字段，0.1 版也能读
+        assert!(!serde_json::to_string(&e).unwrap().contains("prepared"));
+    }
+
+    #[test]
+    fn changing_date_clears_prepared() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 10).unwrap();
+        let input = EventInput {
+            name: "a".into(),
+            category: Category::Birthday,
+            rule: rule(CalendarKind::Solar, 10, 20, false, None),
+            offsets: vec![7, 0],
+            note: String::new(),
+            enabled: true,
+        };
+        let mut e = Event::new("a".into(), input.clone(), Utc::now(), today);
+        e.prepared = NaiveDate::from_ymd_opt(2026, 10, 20);
+        // 只改名字：保留
+        e.apply(EventInput { name: "b".into(), ..input.clone() }, Utc::now(), today);
+        assert!(e.prepared.is_some());
+        // 改日期：清除
+        e.apply(EventInput { rule: rule(CalendarKind::Solar, 10, 21, false, None), ..input }, Utc::now(), today);
+        assert_eq!(e.prepared, None);
     }
 
     #[test]
